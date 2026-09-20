@@ -253,6 +253,7 @@ updated_at: 2026-09-20
 - **REQ-004.3**: The system **shall** 支持左移/右移交换相邻槽位、移除指定槽位（后续槽位前移保持相对顺序）、清空全部槽位。
 - **REQ-004.4**: **When** 选择/移动/移除/清空发生，the system **shall** 立即更新保底预览。
 - **REQ-004.5**: **If** 排列未满 3 张 或 撤换次数为 0 或 未选择任何撤换目标，**then** the system **shall** 禁用"撤换"。
+- **REQ-004.6**: The system **shall** 把排列编辑视为持久化命令（走 §12.3 同一提交管线），使刷新后可恢复未完成的排列；撤换选择集不持久化（D-13 说明见 §12.3）。
 
 **实现映射**: §11.2, §11.4 保底预览
 
@@ -714,8 +715,8 @@ updated_at: 2026-09-20
 |---------|----------|----------|----------|----------|----------|----------|
 | ACTION-001 | 开始新夜拍（含种子） | STATE-001 / STATE-006 / STATE-007 / STATE-010 | STATE-002（第 1 场） | 校验通过并落盘后立即 | 种子非法 → `RULE_INVALID_SEED`，不改变状态 | REQ-001 |
 | ACTION-002 | 继续存档 | STATE-001（存在有效存档） | 由 `phase` 决定 | 立即 | 存档无效 → 进入 STATE-010 | REQ-014 |
-| ACTION-003 | 选择 / 移动 / 移除 / 清空排列槽 | STATE-002 | STATE-002 | 立即（前端内存态，不入存档关键路径） | 无 | REQ-004 |
-| ACTION-004 | 选择撤换目标 | STATE-002 | STATE-002 | 立即（前端内存态） | 无 | REQ-004 |
+| ACTION-003 | 选择 / 移动 / 移除 / 清空排列槽 | STATE-002 | STATE-002 | 立即（**持久化命令**，走 §12.3 同一提交管线：校验 → 计算 → 落盘 → 提交内存） | 落盘失败 → 回滚该次编辑并提示；选择非法 → `RULE_INVALID_SELECTION` | REQ-004 |
+| ACTION-004 | 选择撤换目标（1–3 张） | STATE-002 | STATE-002 | 立即（**纯 UI 瞬时态**：不属于 `RunState`、不落盘、不占用 `seq`） | 无（选择集非法时仅禁用按钮，不产生状态变更） | REQ-004 |
 | ACTION-005 | 撤换 | STATE-002（`mulligansLeft > 0`） | STATE-002 | 补牌完成后落盘 | 选择非法 → `RULE_INVALID_MULLIGAN`；次数耗尽 → `RULE_RESOURCE_EXHAUSTED` | REQ-003、REQ-015 |
 | ACTION-006 | 上拍（出牌） | STATE-002（`playsLeft > 0`、排列 3 张） | STATE-003 | 结算提交并落盘后跳转 | 选择非法 / 阶段错误 / 事件超限 → 拒绝且不改变状态 | REQ-005、REQ-007、REQ-009 |
 | ACTION-007 | 结算继续 | STATE-003 | STATE-002 / STATE-004 / STATE-006 / STATE-007 | 立即（判定顺序见下） | 阶段错误 → `RULE_INVALID_PHASE` | REQ-011 |
@@ -739,7 +740,7 @@ updated_at: 2026-09-20
 stateDiagram-v2
     [*] --> home
     home --> hand : ACTION-001 开始新夜拍 / ACTION-002 继续存档
-    hand --> hand : ACTION-003 排列编辑 / ACTION-004 选择撤换目标
+    hand --> hand : ACTION-003 排列编辑（持久化命令）/ ACTION-004 选择撤换目标（UI 瞬时态）
     hand --> hand : ACTION-005 撤换（补牌，消耗1次撤换）
     hand --> settlement : ACTION-006 上拍（结算提交并落盘）
     settlement --> hand : ACTION-007 未达标且有出牌次数（补牌进入下一轮）
@@ -1712,9 +1713,9 @@ sequenceDiagram
 | 界面元素 | 数据来源 | 命令 | 可用性条件 |
 |----------|----------|------|------------|
 | 手牌 6 张 | `view.hand` | `SET_LINE`（加入槽位） | `phase === 'hand'` |
-| 三个顺序槽 | `view.lineSlots` | `SET_LINE`（移动/移除/清空） | `phase === 'hand'` |
+| 三个顺序槽 | `view.lineSlots` | `SET_LINE`（选择/移动/移除/清空；持久化命令，每次编辑落盘） | `phase === 'hand'` |
 | 保底公式与预览 | `view.floorPreview` | — | 槽位满 3 张 |
-| 撤换按钮 | `view.mulligansLeft` | `MULLIGAN` | 已选 1–3 张 且 `mulligansLeft > 0` 且 `phase === 'hand'` |
+| 撤换按钮 | `view.mulligansLeft` | `MULLIGAN`（撤换选择集为 UI 瞬时态，不落盘） | 已选 1–3 张 且 `mulligansLeft > 0` 且 `phase === 'hand'` |
 | 上拍按钮 | `view.playsLeft` | `PLAY` | 槽位满 3 张 且 `playsLeft > 0` 且 `phase === 'hand'` |
 | 结算继续 | `view.settlement` | `CONTINUE` | `phase === 'settlement'` |
 | 奖励候选 | `view.rewardCandidates` | `COLLECT_REWARD` | `phase === 'reward_pick'` |
@@ -1734,8 +1735,8 @@ sequenceDiagram
 | 部署形态 | 单进程、单页面、单用户、完全离线 | 无服务端、无网络、无多副本 |
 | 并发写来源 | 仅两种：同一页面内的串行命令；同一浏览器下多个标签页共享同一 localStorage 键 | 无跨进程事务需求 |
 | 状态真相源 | 内存中的不可变 `RunState`；存档是它的持久化镜像 | 任何界面展示都从 `RunState` 派生 |
-| 事务边界 | **一次命令 = 一次快照提交**（校验 → 计算 → 落盘 → 回读校验 → 提交内存） | 见 §12.3 |
-| 一致性等级 | 强一致（内存与存档在同一提交内一致）；跨标签页为乐观并发控制 | 见 §12.4 |
+| 事务边界 | **一次持久化命令 = 一次快照提交**（校验 → 计算 → 落盘 → 回读校验 → 提交内存）；排列编辑（ACTION-003）属持久化命令，撤换选择（ACTION-004）属 UI 瞬时态 | 见 §12.3 |
+| 一致性等级 | 强一致（内存与存档在同一提交内一致，排列编辑同样落盘，因此**内存与存档在任意已提交时刻恒等**）；跨标签页为乐观并发控制 | 见 §12.4 |
 | 随机状态一致性 | 三条随机流状态随快照同事务保存 | 恢复后随机序列一致（REQ-015.1） |
 
 ## 12.2 能力注册表与规则配置
@@ -1768,6 +1769,10 @@ handleCommand(command):
 **为什么采用"先落盘后提交内存"**：避免"内存已入账、存档未写"的不一致（NFR-010）；崩溃时最坏情况是本次操作未生效（保留上一份完整快照），不会出现半写入状态（单键写入为原子替换）。
 
 **关于随机流**：随机流的推进发生在第 2 步的纯计算内，其结果随 `nextState` 一起落盘；因此"操作被拒绝"必然对应"随机流未推进"（REQ-015.3）。
+
+**关于排列编辑（ACTION-003）**：排列槽 `lineSlots` 是 `RunState` 的组成部分，因此"选择/移动/移除/清空"同样走本管线并落盘。这是对 PRD §15.1 保存时机的**补充**（PRD 为最低要求），收益是"内存与存档恒等"这一强不变量与刷新后可直接恢复未完成的排列；代价是每次点击产生一次小体量写入（单局快照 < 30 KB，可忽略）。
+
+**关于撤换选择（ACTION-004）**：撤换选择集是纯 UI 瞬时态，不属于 `RunState`、不落盘、不占用 `seq`；刷新后清空（PRD §15.2 未将其列入存档内容，见 `data-model.md` A6）。
 
 ## 12.4 并发与幂等
 
