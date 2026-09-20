@@ -26,6 +26,8 @@
 | 6 | `mh_save_settlement_event` | 结算流水（每轮触发/额外触发/热度变化/概率判定事件序列） |
 | 7 | `mh_run_history` | 对局历史（已结束对局的结果统计，用于回看与回归比对） |
 
+> **载体说明（U-07，2026-09-20 用户确认）**：本表结构**同时**是桌面壳（Tauri v2）的**实际生产持久化 schema**——桌面壳强制以 SQLite 为唯一载体，直接执行第四章 DDL；浏览器版则以 localStorage 单键 JSON 承载同一结构（字段 1:1 映射见第六章）。两载体共享同一 `save_schema_version` 与迁移链。
+
 ### 1.3 设计约定
 
 + **方言适配说明（重要）**：本项目用户已确认产出 **SQLite 建表 DDL**（U-04），而 `ddl-conventions.md` 的强制项（`ENGINE=InnoDB`、`COLLATE utf8mb4_general_ci`、`bigint unsigned auto_increment`、`ON UPDATE CURRENT_TIMESTAMP`、列级 `COMMENT`）为 MySQL 专属语法。本文件按 **SQLite 方言**落地，并对规范强制项做等价替换，逐项列明如下：
@@ -47,14 +49,18 @@
 + 软删除统一使用 `is_del INTEGER NOT NULL DEFAULT 0`（`0=未删除，1=已删除`），与 `ddl-conventions.md` 一致；运行时 localStorage 快照不含该字段（单槽固定 `auto`，无删除/重建场景）。
 + **`is_del` 适用范围**：仅 `mh_save_slot`、`mh_save_card` 两张「记录可被逻辑删除」的业务表携带 `is_del`。`mh_save_line_slot`、`mh_save_reward_candidate` 属**整体重建的派生表**（每次提交按快照整表替换，无单条逻辑删除语义），`mh_save_settlement_event`、`mh_run_history` 属**只插不改的追加型表**（沿用 `ddl-conventions.md` 对追加型表的豁免），`mh_card_template` 属**配置表**（用 `enabled` 表达启停）。上述表不加 `is_del` 以避免永不被写入的死字段；若未来出现按单条删除的诉求，再按规范补齐并同步快照契约。
 + 单存档槽设计：`mh_save_slot.save_id` 固定为 `auto`（PRD §15 只要求一份自动存档）；表结构保留多槽扩展能力。
-+ 运行时持久化默认使用 **localStorage 单键 JSON 快照**（U-03），其字段与本章表结构 1:1 映射（见第六章）；SQLite 表结构作为**规范数据模型**，并作为桌面壳（Tauri v2）可选适配器的建表依据（U-04、D-04）。
++ **持久化载体分工（U-03 + U-04 + U-07，强制）**：
+  + **浏览器版**：`localStorage` 单键 JSON 快照（`mnh.save.auto`），字段与本章表结构 1:1 映射（见第六章）。
+  + **桌面壳（Tauri v2）**：**强制以 SQLite 库文件为唯一持久化载体**，直接执行第四章 DDL；**不得启用 localStorage 存档路径**（U-07）。
+  + 两载体共享同一 `save_schema_version`、同一迁移链与同一字段映射；差异仅限适配器实现（`src/platform/`），内核、AI 接口与界面完全共用。
+  + 桌面壳写入契约见 §6.6（单事务、整表替换子表、`op_seq` 乐观校验、提交后回读）。
 
 ### 1.4 设计假设与待确认项
 
 | 编号 | 模糊点 | 当前假设 | 状态 |
 |---|---|---|---|
-| A1 | 木槌读取额外触发计数的口径（PRD §8.3 与 §9.2 存在两种读法） | 按 Spec D-01：计数在额外触发派发时 +1，能力读取本次触发开始前的快照 → 木槌被额外触发时不计入自身；`木槌→镜子→镜子` = 18 点 × 3 热度 = 54 | 待确认（Spec §19.4 Q-01） |
-| A2 | 桌面壳是否强制以 SQLite 为唯一持久化载体 | 默认沿用 localStorage；SQLite 为可选适配器，两实现共享同一 `save_schema_version` 与迁移链 | 待确认（Spec §19.4 Q-02） |
+| A1 | 木槌读取额外触发计数的口径（PRD §8.3 与 §9.2 存在两种读法） | 按 Spec D-01：计数在额外触发派发时 +1，能力读取本次触发开始前的快照 → 木槌被额外触发时不计入自身；`木槌→镜子→镜子` = 18 点 × 3 热度 = 54 | **已确认**（用户 U-06，2026-09-20） |
+| A2 | 桌面壳是否强制以 SQLite 为唯一持久化载体 | **已确认（U-07）：强制 SQLite**，桌面壳不使用 localStorage；两载体共享同一 `save_schema_version` 与迁移链，字段 1:1 映射 | **已确认**（用户，2026-09-20；Spec §19.1 U-07、§12.3.1） |
 | A3 | 是否需要保留对局历史（PRD 未要求） | 保留 `mh_run_history`（含 localStorage 快照中的 `runHistory` 数组，最多 20 条），用于通关/失败页回看与回归比对；不参与结算 | 已确认（Agent 默认决策，成本极低且提升可验证性） |
 | A4 | `update_time` 在 SQLite 下无自动更新能力 | 由应用层在每次写入时显式赋值（写入契约）；localStorage 路径同样维护 `updatedAt` | 已确认 |
 | A5 | 结算流水的存储形态 | 关系表 `mh_save_settlement_event`（规范模型）+ 快照内 `settlementTrace` 数组（运行时）；两者字段一一对应 | 已确认 |
@@ -363,16 +369,17 @@ CREATE INDEX `idx_seed` ON `mh_run_history` (`seed`);
 
 ---
 
-## 六、运行时持久化契约（localStorage 单键 JSON）与字段映射
+## 六、运行时持久化契约与字段映射
 
-> 依据 U-03（运行时载体 = localStorage 单键 JSON）与 U-04（规范数据模型 = SQLite DDL）。两者字段 1:1 映射，SQLite 适配器执行第四章 DDL 后可无损承载同一快照。
+> 依据 U-03（浏览器版载体 = localStorage 单键 JSON）、U-04（规范数据模型 = SQLite DDL）与 **U-07（桌面壳强制以 SQLite 为唯一载体）**。两载体字段 1:1 映射，SQLite 适配器执行第四章 DDL 后可无损承载同一快照；§6.1–§6.5 描述**快照结构（两载体共用语义）**，§6.6 描述**桌面壳 SQLite 写入契约**。
 
 ### 6.1 键与信封
 
 | 项 | 值 |
 |---|---|
-| 主存档键 | `mnh.save.auto` |
-| 损坏备份键 | `mnh.save.corrupted.<ISO 时间戳>`（最多保留 3 份） |
+| 主存档键（**仅浏览器版**） | `mnh.save.auto`（桌面壳不使用任何 localStorage 键，U-07） |
+| 损坏备份（浏览器版） | 键 `mnh.save.corrupted.<ISO 时间戳>`（最多保留 3 份） |
+| 损坏备份（桌面壳） | 库文件副本 `save.corrupted.<ISO 时间戳>.db`（最多保留 3 份） |
 | AI 会话独立键（`persist: true` 时） | `mnh.ai.session.<sessionId>` |
 | 写入方式 | 单键整体覆盖（原子替换）+ 写入后回读校验 |
 | 编码 | UTF-8 JSON 文本（禁止 `eval`，仅 `JSON.parse`） |
@@ -490,6 +497,24 @@ CREATE INDEX `idx_seed` ON `mh_run_history` (`seed`);
 
 > 当前 `saveSchemaVersion = 1` 为初始版本，尚无实际迁移；框架与单测样本需在编码阶段一并落地（Spec NFR-006、TC-049）。
 
+### 6.6 桌面壳 SQLite 写入契约（U-07，强制）
+
+> 桌面壳以 SQLite 库文件为**唯一**持久化载体，执行第四章 DDL。以下契约与 Spec §12.3.1 一致，编码时以两处为准（冲突时以 Spec 为准）。
+
+| 项 | 约定 |
+|---|---|
+| 库文件 | 应用数据目录下单一文件（如 `midnight-hammer.db`）；不接受用户指定任意路径（Spec SEC-08） |
+| 建表 | 启动时按第四章 DDL 建表（`CREATE TABLE IF NOT EXISTS` 语义），并校验 `mh_card_template` 的 12 条种子数据与 REQ-006 一致 |
+| 单次提交 | **一个事务**内完成：`BEGIN IMMEDIATE` → 校验并更新 `mh_save_slot` → 按 `save_id` **整表替换** `mh_save_line_slot` / `mh_save_reward_candidate` / `mh_save_settlement_event` → （仅对局结束时）追加 `mh_run_history` → `COMMIT` |
+| 乐观锁 | 事务内先读 `mh_save_slot.op_seq` 与内存 `opSeq` 比对，不一致即 `ROLLBACK` 并返回 `SAVE_CONFLICT` |
+| 回读校验 | `COMMIT` 后重新查询并按 §6.2/§6.3 反向重建快照，与 `nextState` 逐字段比对；不一致按 `SAVE_WRITE_FAILED` 处理（此时库内已是新值，需提示用户重新载入） |
+| 枚举转换 | 快照语义枚举（`hand`/`draw`/`discard`、`trigger`/`extra_trigger`/`heat`/`roll`、`phase` 名称）↔ SQLite 数值枚举的转换**只**发生在 `src/platform/`，内核只见语义枚举 |
+| 整表替换的理由 | `mh_save_line_slot` / `mh_save_reward_candidate` / `mh_save_settlement_event` 为派生数据（长度 ≤ 3 或每轮重算），按 `save_id` 删除重插比逐行 diff 更简单且天然幂等；`mh_save_card` 需保留 `zone_order` 语义，按 `(save_id, card_id)` upsert 并删除多余行 |
+| 迁移 | 与浏览器版共用同一迁移链；迁移在同一事务内执行，任一步失败 `ROLLBACK` 并走损坏流程（Spec §17.2） |
+| 失败语义 | 事务失败（磁盘满/文件被占用/只读）→ `ROLLBACK`，内存状态不变，返回 `SAVE_WRITE_FAILED`（Spec FR-05） |
+| 损坏处理 | 库文件无法打开或校验失败 → 转存副本 `save.corrupted.<ISO 时间戳>.db` → 进入 `save_corrupted`（Spec §15.2） |
+| 不变量 | 每次提交后满足：`mh_save_card` 牌区并集 = 该 `save_id` 全部实牌；`mh_save_line_slot` 行数 ≤ 3 且 `card_id` 属于 `hand` 区；`mh_save_reward_candidate` 行数为 0 或 3 且模板互不相同 |
+
 ---
 
 > **基于**：《午夜落槌 · 藏品连锁》从0到1产品需求文档；`midnight-hammer-spec.md`（REQ-014、REQ-015、§12、§15、§17）；用户决策 U-01–U-05。
@@ -517,4 +542,4 @@ CREATE INDEX `idx_seed` ON `mh_run_history` (`seed`);
 | 1 | 7 张表共用索引名 `idx_createtime` | **阻断**：SQLite 索引名空间为库级全局唯一，第 2 张表起报错 `index idx_createtime already exists`，第四章 DDL 无法整体执行 | 索引名加表名前缀（`idx_<表名>_createtime`），并在 §1.3 方言适配表逐项说明与 `ddl-conventions.md` 的偏离原因 |
 | 2 | §3.1 状态机将「第 3 场达标」指向 `4 = upgrade_pick` | 与 PRD §12、Spec §7.2/§7.3、`tech-analysis` §4.4.1 矛盾；`6 = run_won` 无入边，第 3 场胜利无法进入通关 | 修正为 `2 → 6 = run_won`（直接通关，不发奖励），并补齐 `run_won` / `run_lost` 的终态出边 |
 
-> 说明：修正后的 DDL 为**唯一可执行版本**，编码阶段可直接用于 SQLite 适配器建表；若后续改为 MySQL 方言，需按 `ddl-conventions.md` 恢复 `idx_createtime` 命名与 MySQL 专属语法（`ENGINE` / `COLLATE` / `ON UPDATE CURRENT_TIMESTAMP` / 列级 `COMMENT`）。
+> 说明：修正后的 DDL 为**唯一可执行版本**。按 U-07，该 DDL 即**桌面壳的生产建表脚本**（T-02-06 直接使用，并覆盖 TC-051–TC-054），不再是"可选适配器参考"；若后续改为 MySQL 方言，需按 `ddl-conventions.md` 恢复 `idx_createtime` 命名与 MySQL 专属语法（`ENGINE` / `COLLATE` / `ON UPDATE CURRENT_TIMESTAMP` / 列级 `COMMENT`）。
