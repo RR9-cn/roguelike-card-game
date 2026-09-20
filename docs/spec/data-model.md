@@ -44,6 +44,7 @@
 + 每个业务实体表必有业务编码字段并加唯一约束；索引命名遵循「去掉字段内下划线后用下划线连接」：如 `uniq_saveid_cardid`、`idx_saveid_zone`。
 + 状态/类型字段使用 `INTEGER` + 注释完整列出枚举值；枚举值在 Spec 与代码中保持一致。
 + 时间字段统一为 UTC ISO-8601 文本（`datetime`），未发生的时间使用 `1970-01-01 00:00:00`（仅 `mh_run_history.finished_time` 使用）。
++ 软删除统一使用 `is_del INTEGER NOT NULL DEFAULT 0`（`0=未删除，1=已删除`），与 `ddl-conventions.md` 一致；运行时 localStorage 快照不含该字段（单槽固定 `auto`，无删除/重建场景）。
 + 单存档槽设计：`mh_save_slot.save_id` 固定为 `auto`（PRD §15 只要求一份自动存档）；表结构保留多槽扩展能力。
 + 运行时持久化默认使用 **localStorage 单键 JSON 快照**（U-03），其字段与本章表结构 1:1 映射（见第六章）；SQLite 表结构作为**规范数据模型**，并作为桌面壳（Tauri v2）可选适配器的建表依据（U-04、D-04）。
 
