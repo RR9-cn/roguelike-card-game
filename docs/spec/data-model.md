@@ -37,7 +37,7 @@
 | `ENGINE` / `CHARSET` / `COLLATE` | SQLite 无表空间与排序规则声明，统一使用 UTF-8 文本（`TEXT`/`VARCHAR`） |
 | `ON UPDATE CURRENT_TIMESTAMP` | SQLite 不支持，`update_time` 由**应用层**在每次写入时显式赋值（写入契约，见 §1.4 A4） |
 | `datetime default CURRENT_TIMESTAMP` | `datetime NOT NULL DEFAULT (datetime('now'))` |
-| 每张表 `create_time` + `KEY idx_createtime (create_time)` | 保留字段与 `idx_createtime` 索引 |
+| 每张表 `create_time` + `KEY idx_createtime (create_time)` | 保留 `create_time` 字段与普通索引，但**索引名按表前缀化**（`idx_mh_save_slot_createtime` 等）：规范中的 `idx_createtime` 命名依赖 MySQL「索引名在表内唯一」的语义，而 SQLite 的索引名空间是**库级全局唯一**，7 张表同名 `idx_createtime` 会导致第 2 张表起建索引失败（已实测报错 `index idx_createtime already exists`）。字段语义与索引列完全一致，仅索引标识符加表名前缀 |
 
 + 表名统一前缀 `mh_`（midnight hammer），与未来可能的其他模块隔离。
 + 表间关联一律使用**业务编码**（`save_id`、`card_id`、`template_id`、`event_id`），**禁止物理外键**；关联目标在字段注释中标注。
@@ -45,6 +45,7 @@
 + 状态/类型字段使用 `INTEGER` + 注释完整列出枚举值；枚举值在 Spec 与代码中保持一致。
 + 时间字段统一为 UTC ISO-8601 文本（`datetime`），未发生的时间使用 `1970-01-01 00:00:00`（仅 `mh_run_history.finished_time` 使用）。
 + 软删除统一使用 `is_del INTEGER NOT NULL DEFAULT 0`（`0=未删除，1=已删除`），与 `ddl-conventions.md` 一致；运行时 localStorage 快照不含该字段（单槽固定 `auto`，无删除/重建场景）。
++ **`is_del` 适用范围**：仅 `mh_save_slot`、`mh_save_card` 两张「记录可被逻辑删除」的业务表携带 `is_del`。`mh_save_line_slot`、`mh_save_reward_candidate` 属**整体重建的派生表**（每次提交按快照整表替换，无单条逻辑删除语义），`mh_save_settlement_event`、`mh_run_history` 属**只插不改的追加型表**（沿用 `ddl-conventions.md` 对追加型表的豁免），`mh_card_template` 属**配置表**（用 `enabled` 表达启停）。上述表不加 `is_del` 以避免永不被写入的死字段；若未来出现按单条删除的诉求，再按规范补齐并同步快照契约。
 + 单存档槽设计：`mh_save_slot.save_id` 固定为 `auto`（PRD §15 只要求一份自动存档）；表结构保留多槽扩展能力。
 + 运行时持久化默认使用 **localStorage 单键 JSON 快照**（U-03），其字段与本章表结构 1:1 映射（见第六章）；SQLite 表结构作为**规范数据模型**，并作为桌面壳（Tauri v2）可选适配器的建表依据（U-04、D-04）。
 
@@ -85,7 +86,7 @@ mh_save_slot (存档槽 · 一局一档)
         │               │
         └── 0:N ──► mh_save_settlement_event (结算流水)
 
-mh_run_history (对局历史 · 独立追加型表，通过 seed + save_id 关联)
+mh_run_history (对局历史 · 独立追加型表，通过 run_id / seed 关联，不建物理外键)
 
 关系说明：
   mh_save_slot 1:N mh_save_card              —— 一份存档包含该局全部实牌（开局 10 张，两次奖励后 12 张）
@@ -111,11 +112,12 @@ stateDiagram-v2
     1 --> 2 : 上拍（结算入账并落盘）
     2 --> 1 : 未达标且有出牌次数（补牌进入下一轮）
     2 --> 3 : 第1/2场达标
-    2 --> 4 : 第3场达标
-    2 --> 5 : 未达标且次数耗尽
+    2 --> 6 : 第3场达标（通关）
+    2 --> 5 : 未达标且次数耗尽（失败）
     3 --> 4 : 领取奖励
     4 --> 1 : 升级完成进入下一场
-    4 --> [*] : 进入下一场（同一对局继续）
+    5 --> [*] : 本局结束（返回首页 / 随机开始新局）
+    6 --> [*] : 本局结束（返回首页 / 随机开始新局）
 ```
 
 #### 状态转换明细
@@ -127,12 +129,12 @@ stateDiagram-v2
 | `1 = hand` | 上拍（PLAY，成交价入账） | `2 = settlement` | 玩家 |
 | `2 = settlement` | 结算继续：未达标且 `plays_left > 0` | `1 = hand` | 玩家 |
 | `2 = settlement` | 结算继续：第 1/2 场达标 | `3 = reward_pick` | 系统 |
-| `2 = settlement` | 结算继续：第 3 场达标 | `4 = upgrade_pick`（经奖励后为 `run_won` 分支） | 系统 |
+| `2 = settlement` | 结算继续：第 3 场达标 | `6 = run_won`（直接通关，**不进入奖励与升级**） | 系统 |
 | `2 = settlement` | 结算继续：未达标且 `plays_left = 0` | `5 = run_lost` | 系统 |
 | `3 = reward_pick` | 领取 1 个候选模板 | `4 = upgrade_pick` | 玩家 |
 | `4 = upgrade_pick` | 选择 1 张实牌 +2 点 | `1 = hand`（下一场） | 玩家 |
 
-> 说明：PRD §11 规定第 1、2 场胜利后「依次执行三选一收集 → 点数升级」，因此 `reward_pick` 必然跟随 `upgrade_pick`；第 3 场胜利直接进入通关（`run_won`，对局结束，写入 `mh_run_history`）。
+> 说明：PRD §11 规定第 1、2 场胜利后「依次执行三选一收集 → 点数升级」，因此 `reward_pick` 必然跟随 `upgrade_pick`；PRD §12 规定第 3 场胜利**直接进入通关页**，不再发放奖励与升级，因此 `2 → 6 = run_won`（对局结束，写入 `mh_run_history`）。该判定顺序与 Spec §7.2 ACTION-007、`tech-analysis` §4.4.1 完全一致。
 
 #### `phase` 枚举值（与 Spec §7.1 一一对应）
 
@@ -187,7 +189,7 @@ CREATE TABLE `mh_card_template` (
     `update_time` DATETIME NOT NULL DEFAULT (datetime('now')),           -- 修改时间（UTC，由应用层写入）
     UNIQUE (`template_id`)
 );
-CREATE INDEX `idx_createtime` ON `mh_card_template` (`create_time`);
+CREATE INDEX `idx_mh_card_template_createtime` ON `mh_card_template` (`create_time`);
 ```
 
 **种子数据（12 种模板，必须与 Spec REQ-006 完全一致）**
@@ -241,7 +243,7 @@ CREATE TABLE `mh_save_slot` (
     `update_time` DATETIME NOT NULL DEFAULT (datetime('now')),           -- 修改时间（UTC，由应用层写入）
     UNIQUE (`save_id`)
 );
-CREATE INDEX `idx_createtime` ON `mh_save_slot` (`create_time`);
+CREATE INDEX `idx_mh_save_slot_createtime` ON `mh_save_slot` (`create_time`);
 ```
 
 ### 4.3 mh_save_card（实牌）
@@ -260,7 +262,7 @@ CREATE TABLE `mh_save_card` (
     `update_time` DATETIME NOT NULL DEFAULT (datetime('now')),           -- 修改时间（UTC，由应用层写入）
     UNIQUE (`save_id`, `card_id`)
 );
-CREATE INDEX `idx_createtime` ON `mh_save_card` (`create_time`);
+CREATE INDEX `idx_mh_save_card_createtime` ON `mh_save_card` (`create_time`);
 CREATE INDEX `idx_saveid_zone` ON `mh_save_card` (`save_id`, `zone`);
 ```
 
@@ -278,7 +280,7 @@ CREATE TABLE `mh_save_line_slot` (
     UNIQUE (`save_id`, `slot_index`),
     UNIQUE (`save_id`, `card_id`)
 );
-CREATE INDEX `idx_createtime` ON `mh_save_line_slot` (`create_time`);
+CREATE INDEX `idx_mh_save_line_slot_createtime` ON `mh_save_line_slot` (`create_time`);
 ```
 
 ### 4.5 mh_save_reward_candidate（奖励候选）
@@ -296,7 +298,7 @@ CREATE TABLE `mh_save_reward_candidate` (
     UNIQUE (`save_id`, `candidate_index`),
     UNIQUE (`save_id`, `template_id`)
 );
-CREATE INDEX `idx_createtime` ON `mh_save_reward_candidate` (`create_time`);
+CREATE INDEX `idx_mh_save_reward_candidate_createtime` ON `mh_save_reward_candidate` (`create_time`);
 ```
 
 ### 4.6 mh_save_settlement_event（结算流水）
@@ -323,7 +325,7 @@ CREATE TABLE `mh_save_settlement_event` (
     `create_time` DATETIME NOT NULL DEFAULT (datetime('now')),           -- 创建时间（UTC）
     UNIQUE (`save_id`, `act_index`, `round_no`, `event_index`)
 );
-CREATE INDEX `idx_createtime` ON `mh_save_settlement_event` (`create_time`);
+CREATE INDEX `idx_mh_save_settlement_event_createtime` ON `mh_save_settlement_event` (`create_time`);
 CREATE INDEX `idx_saveid_actindex_roundno` ON `mh_save_settlement_event` (`save_id`, `act_index`, `round_no`);
 ```
 
@@ -343,7 +345,7 @@ CREATE TABLE `mh_run_history` (
     `create_time` DATETIME NOT NULL DEFAULT (datetime('now')),           -- 创建时间（UTC）
     UNIQUE (`run_id`)
 );
-CREATE INDEX `idx_createtime` ON `mh_run_history` (`create_time`);
+CREATE INDEX `idx_mh_run_history_createtime` ON `mh_run_history` (`create_time`);
 CREATE INDEX `idx_seed` ON `mh_run_history` (`seed`);
 ```
 
@@ -492,3 +494,27 @@ CREATE INDEX `idx_seed` ON `mh_run_history` (`seed`);
 
 > **基于**：《午夜落槌 · 藏品连锁》从0到1产品需求文档；`midnight-hammer-spec.md`（REQ-014、REQ-015、§12、§15、§17）；用户决策 U-01–U-05。
 > **关联产物**：`midnight-hammer-spec.md`、`task-split/task.md`、`task-split/decision-log.md`、`tech-analysis/midnight-hammer-tech-analysis.md`。
+
+---
+
+## 附录 A：DDL 执行验证记录
+
+> 第四章 DDL 已在 SQLite 3.37（`sqlite3` 内存库）中**逐条实际执行验证**，而非仅做静态检查。
+
+| 验证项 | 方法 | 结果 |
+|---|---|---|
+| DDL 可执行性 | 提取第四章全部 SQL 语句顺序执行 | 18 条语句全部成功，0 失败 |
+| 建表结果 | `sqlite_master` 查询 | 7 张业务表全部创建（`mh_card_template`、`mh_save_slot`、`mh_save_card`、`mh_save_line_slot`、`mh_save_reward_candidate`、`mh_save_settlement_event`、`mh_run_history`） |
+| 索引结果 | `sqlite_master` 查询 | 10 个索引全部创建（7 个 `idx_<表名>_createtime` + `idx_saveid_zone` + `idx_saveid_actindex_roundno` + `idx_seed`） |
+| 种子数据 | `SELECT count(*) FROM mh_card_template` | 12 条，`template_id` / `base_points` / `category` 与 Spec REQ-006 逐行一致 |
+| 写入冒烟 | 插入 1 份存档 + 10 张实牌 + 3 个排列槽 + 3 个奖励候选 + 1 条流水 + 1 条历史 | 全部成功 |
+| 唯一约束有效性 | 重复插入 `card_id` / `slot_index` / `candidate_index` / `template_id` | 4 项均被 `UNIQUE` 拒绝（`IntegrityError`），约束生效 |
+
+**验证中发现并已修正的缺陷（记录备查）**：
+
+| # | 缺陷 | 影响 | 修正 |
+|---|---|---|---|
+| 1 | 7 张表共用索引名 `idx_createtime` | **阻断**：SQLite 索引名空间为库级全局唯一，第 2 张表起报错 `index idx_createtime already exists`，第四章 DDL 无法整体执行 | 索引名加表名前缀（`idx_<表名>_createtime`），并在 §1.3 方言适配表逐项说明与 `ddl-conventions.md` 的偏离原因 |
+| 2 | §3.1 状态机将「第 3 场达标」指向 `4 = upgrade_pick` | 与 PRD §12、Spec §7.2/§7.3、`tech-analysis` §4.4.1 矛盾；`6 = run_won` 无入边，第 3 场胜利无法进入通关 | 修正为 `2 → 6 = run_won`（直接通关，不发奖励），并补齐 `run_won` / `run_lost` 的终态出边 |
+
+> 说明：修正后的 DDL 为**唯一可执行版本**，编码阶段可直接用于 SQLite 适配器建表；若后续改为 MySQL 方言，需按 `ddl-conventions.md` 恢复 `idx_createtime` 命名与 MySQL 专属语法（`ENGINE` / `COLLATE` / `ON UPDATE CURRENT_TIMESTAMP` / 列级 `COMMENT`）。

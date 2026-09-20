@@ -810,6 +810,26 @@ stateDiagram-v2
 | 新增 | `close` | 本地 JSON 请求 | 关闭会话（不影响存档与本局） | REQ-016 | 否 |
 | 新增 | `ai:jsonl` | CLI（stdin/stdout JSONL） | 批量回归入口 | REQ-016.6 | 否 |
 
+### 8.1.1 命名与编号对照（跨产物一致性）
+
+> 同一接口在三份产物中的标识不同：本文用 `API-00x` 编号与线上线（wire）字段 `operation` / `decision.type` 描述契约；`task-split/api-spec.md` 与 `tech-analysis` 用点分隔的接口标识（`auction.ai.*`，非 HTTP 路由）描述同一接口。三者的对应关系固定如下，编码时以本表为准，不得新增未登记接口。
+
+| 接口标识（`api-spec.md` / `tech-analysis`） | 本文编号 | 线上线字段 | 用途 |
+|---|---|---|---|
+| `auction.ai.start` | API-001 | `operation: "start"` | 开始新局，返回会话 ID 与公开视图 |
+| `auction.ai.observe` | API-002 | `operation: "observe"` | 观察当前公开状态 |
+| `auction.ai.preview` | API-003 | `operation: "preview"` + `decision.type: "preview"` | 保底预览，不改变状态 |
+| `auction.ai.act.play` | API-004 | `operation: "act"` + `decision.type: "play"` | 顺序出牌并实际结算 |
+| `auction.ai.act.mulligan` | API-005 | `operation: "act"` + `decision.type: "mulligan"` | 撤换 1–3 张手牌 |
+| `auction.ai.act.continue` | API-006 | `operation: "act"` + `decision.type: "continue"` | 结算继续并按序判定 |
+| `auction.ai.act.collect` | API-007 | `operation: "act"` + `decision.type: "collect"` | 领取三选一奖励 |
+| `auction.ai.act.upgrade` | API-008 | `operation: "act"` + `decision.type: "upgrade"` | 实牌永久 +2 点 |
+| `auction.ai.history` | API-009 | `operation: "history"` | 本会话结算流水历史 |
+| `auction.ai.close` | API-010 | `operation: "close"` | 关闭会话（不影响存档） |
+| `npm run ai -- --jsonl` | API-011 | CLI stdin/stdout JSONL | 批量回归入口（非 `operation`，走 CLI 通道） |
+
+> 说明：`auction.ai.*` 是**接口标识**而非 HTTP 路由（本项目无 HTTP 服务，`api-spec.md` 已注明"非服务化"）；实际调用形态为本地 JSON 请求（`schemaVersion: 2`）。API-011 为 CLI 入口，不占用 `operation` 取值空间。
+
 ## 8.2 公共约定
 
 **请求信封**
@@ -2172,9 +2192,9 @@ handleCommand(command):
 | REQ-011 | §7.2、§11.3 | T-01-08 | TC-036、TC-037、TC-038 | API-006 | PRD §12 |
 | REQ-012 | §11.7 | T-01-09 | TC-030、TC-031、TC-032 | API-007 | PRD §11.1 |
 | REQ-013 | §11.7 | T-01-09 | TC-033、TC-034、TC-035 | API-008 | PRD §11.2 |
-| REQ-014 | §15、§17.2 | T-02-01–T-02-04 | TC-040–TC-043、TC-049 | `mh_save_*` 表 / 单键 JSON | PRD §15 |
+| REQ-014 | §15、§17.2 | T-02-01–T-02-04、T-02-06 | TC-040–TC-043、TC-049 | `mh_save_*` 表 / 单键 JSON | PRD §15 |
 | REQ-015 | §12.3、§12.4 | T-02-05、T-01-10 | TC-025、TC-026、TC-027、TC-048 | API-004–API-008 的 `seq` | PRD §16 |
-| REQ-016 | §8 | T-03-01–T-03-04 | TC-044、TC-046、TC-047、TC-048 | API-001–API-011 | PRD §17 |
+| REQ-016 | §8 | T-03-01–T-03-04（含 T-03-02 会话注册表） | TC-044、TC-046、TC-047、TC-048 | API-001–API-011 | PRD §17 |
 | REQ-017 | §4.2、§11.8 | T-04-01、T-04-03 | TC-065、TC-066 | — | PRD §13.1 |
 | REQ-018 | §4.2、§11.8 | T-04-01–T-04-05 | TC-060、TC-068、TC-069 | — | PRD §13.2–§13.6 |
 | REQ-019 | §11.8、§14.2 | T-04-05 | TC-063、TC-064、TC-067 | — | PRD §14 |

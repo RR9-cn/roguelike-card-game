@@ -19,6 +19,8 @@
 > **说明**：本项目无对外 HTTP 服务、无 MQ 消费者、无定时任务、无回调处理。唯一对外接口形态为**本地 JSON 协议**（PRD §17 要求），由 `src/ai/` 暴露给本地 AI 代理与批量回归脚本，底层复用与界面完全相同的内核（REQ-020.3）。
 >
 > 内核内部契约（`createRun` / `execute` / `projectView` / `simulate` / `serialize`）与存档适配器接口属模块内部实现，不作为对外接口列出。
+>
+> **编号对照**：本文件的接口标识（`auction.ai.*`）与详细契约中的 `API-001`–`API-011` 一一对应（顺序一致：start/observe/preview/play/mulligan/continue/collect/upgrade/history/close/jsonl），完整对照表见 `../midnight-hammer-spec.md` §8.1.1。
 
 ---
 

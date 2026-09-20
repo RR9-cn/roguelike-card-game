@@ -383,20 +383,20 @@ mh_run_history (对局历史 · run_id · seed)
 | 表 | 业务查询场景 | 查询/排序字段 | 索引结论 | 必要性 |
 | --- | --- | --- | --- | --- |
 | `mh_save_slot` | 按 `save_id` 读取唯一存档（每次加载/提交） | `save_id` | 复用 `UNIQUE(save_id)` | 唯一约束即访问路径，无需额外索引 |
-| `mh_save_slot` | 规范强制的 `create_time` 索引 | `create_time` | 复用 `idx_createtime` | `ddl-conventions.md` 强制项 |
+| `mh_save_slot` | 规范强制的 `create_time` 索引 | `create_time` | 复用 `idx_mh_save_slot_createtime` | `ddl-conventions.md` 强制项（索引名按 SQLite 库级唯一约束前缀化，见 `data-model.md` §1.3） |
 | `mh_save_card` | 按存档读取全部实牌并按牌区恢复顺序 | `save_id`、`zone` | 新增 `idx_saveid_zone`（`save_id, zone`） | 每次加载/恢复都按牌区取牌，业务必需 |
 | `mh_save_card` | 按 `card_id` 定位实牌（出牌/升级/撤换） | `save_id`、`card_id` | 复用 `UNIQUE(save_id, card_id)` | 唯一约束即访问路径 |
 | `mh_save_line_slot` | 按存档读取排列槽 | `save_id`、`slot_index` | 复用 `UNIQUE(save_id, slot_index)` | 唯一约束即访问路径 |
 | `mh_save_reward_candidate` | 按存档读取 3 个候选 | `save_id`、`candidate_index` | 复用 `UNIQUE(save_id, candidate_index)` | 唯一约束即访问路径 |
 | `mh_save_settlement_event` | 按存档+场次+轮次读取流水并顺序回放 | `save_id`、`act_index`、`round_no`、`event_index` | 新增 `idx_saveid_actindex_roundno`（`save_id, act_index, round_no`） | 结算页与 AI `history` 按轮次取流水，业务必需；`event_index` 已含在唯一约束中 |
 | `mh_run_history` | 按种子查询历史对局（回归比对） | `seed` | 新增 `idx_seed`（`seed`） | 回归按种子比对，业务必需 |
-| 全部表 | 规范强制的 `create_time` 索引 | `create_time` | `idx_createtime`（每表一个） | `ddl-conventions.md` 强制项 |
+| 全部表 | 规范强制的 `create_time` 索引 | `create_time` | `idx_<表名>_createtime`（每表一个） | `ddl-conventions.md` 强制项；SQLite 索引名库级唯一，故加表名前缀（见 `data-model.md` §1.3） |
 
 **新增索引清单**：
 - `idx_saveid_zone` ON `mh_save_card` (`save_id`, `zone`)
 - `idx_saveid_actindex_roundno` ON `mh_save_settlement_event` (`save_id`, `act_index`, `round_no`)
 - `idx_seed` ON `mh_run_history` (`seed`)
-- 各表 `idx_createtime`（规范强制）
+- 各表 `idx_<表名>_createtime`（规范强制，SQLite 下需库级唯一命名）
 
 > 除上述索引外不新增任何索引（无预防性优化）；localStorage 路径不涉及索引。
 
@@ -496,8 +496,8 @@ mh_run_history (对局历史 · run_id · seed)
 | 枚举语义 | 快照 JSON 使用语义枚举（`hand`/`draw`/`discard`、`trigger`/`extra_trigger`/`heat`/`roll`），SQLite 使用数值枚举（注释列明取值）；转换在内核 `save/` 层完成 |
 | 结算与入账原子性 | `pendingPrice`/`pendingPoints`/`pendingHeat`/`floorPrice` 与 `actScore` 在同一快照内提交 |
 | 流水可回放 | 每条事件携带 `totalPointsAfter`/`heatAfter`/`extraCountAfter`，播放器与 AI `history` 无需重算 |
-| 索引最小化 | 仅保留唯一约束、规范强制的 `idx_createtime` 与 3 个业务必需索引（§4.3） |
-| 软删除 | 业务表统一 `is_del INTEGER NOT NULL DEFAULT 0`（`0=未删除，1=已删除`）；运行时快照不含该字段（单槽固定 `auto`） |
+| 索引最小化 | 仅保留唯一约束、规范强制的 `idx_<表名>_createtime` 与 3 个业务必需索引（§4.3） |
+| 软删除 | 记录可逻辑删除的业务表（`mh_save_slot`、`mh_save_card`）使用 `is_del INTEGER NOT NULL DEFAULT 0`（`0=未删除，1=已删除`）；整体重建的派生表与只插不改的追加型表不加 `is_del`（见 `data-model.md` §1.3 适用范围）；运行时快照不含该字段（单槽固定 `auto`） |
 | 无物理外键 | 全部关联以业务编码表达，禁止 `FOREIGN KEY` |
 
 ---
